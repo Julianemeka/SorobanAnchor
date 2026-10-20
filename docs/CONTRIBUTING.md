@@ -45,7 +45,36 @@ make build
 
 # Build WASM target
 make wasm
+
+# Verify no-default-features compatibility (no_std check)
+cargo check --no-default-features
 ```
+
+### Feature Compatibility Check
+
+The project supports both native (std) and WASM (no_std) builds with distinct feature sets. To verify that the library compiles without default features (no_std compatibility):
+
+```bash
+cargo check --no-default-features
+```
+
+This check ensures that the core library remains compatible with no_std environments. It does **not** produce a WASM artifact — for that, use the full WASM build command:
+
+```bash
+cargo build --release --target wasm32-unknown-unknown --no-default-features --features wasm
+```
+
+**When to run:**
+- Before committing changes to core library code
+- After modifying feature gates or conditional compilation
+- When adding new dependencies
+
+**What it validates:**
+- Core library compiles without std feature
+- No accidental dependencies on std-only code
+- Feature gates are correctly configured
+
+**Note:** This is a compile check only. The native CLI (`main.rs`) and host-only modules are excluded when std is disabled, which is expected and correct.
 
 ## Formatting Rules
 

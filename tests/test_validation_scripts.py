@@ -523,5 +523,39 @@ enabled = true
             assert result.returncode == 0, f"Validator should accept TOML directly. stderr: {result.stderr}"
 
 
+class TestValidateWasmBuildScript:
+    """Tests for validate_wasm_build.sh optional environment variable handling."""
+
+    def test_runs_without_optional_source_date_epoch(self):
+        """Script runs successfully when SOURCE_DATE_EPOCH is unset."""
+        import subprocess
+        import os
+
+        script_path = SCRIPT_DIR / "validate_wasm_build.sh"
+        
+        if not script_path.exists():
+            pytest.skip("validate_wasm_build.sh not found")
+        
+        # Create a clean environment without SOURCE_DATE_EPOCH
+        env = os.environ.copy()
+        env.pop('SOURCE_DATE_EPOCH', None)  # Ensure it's not set
+        env.pop('VERBOSE', None)  # Also unset VERBOSE for clean test
+        
+        # Run the script with --help to verify it works without the optional var
+        # Using --help because a full WASM build would take too long
+        result = subprocess.run(
+            [str(script_path), "--help"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        # Script should run successfully (exit 0) and not complain about missing SOURCE_DATE_EPOCH
+        assert result.returncode == 0, f"Script failed without SOURCE_DATE_EPOCH. stderr: {result.stderr}"
+        assert "SOURCE_DATE_EPOCH" not in result.stderr, \
+            "Script should not error when SOURCE_DATE_EPOCH is unset (it's optional)"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
