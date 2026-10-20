@@ -6,6 +6,8 @@
 //! - Export JSON envelope is always valid (starts '[', ends ']').
 //! - Export with offset skips leading entries.
 //! - Export of an empty log returns an empty array.
+//! - Export of a range with no events (records exist outside it) returns an
+//!   empty array shaped like a non-empty export.
 //! - Export batch size cap (50 max).
 //! - set_audit_log_retention + prune interact correctly.
 //! - Disabled audit logging produces an empty export.
@@ -289,6 +291,55 @@ mod audit_log_retention_export_tests {
         let inner = &json[1..json.len()-1];
         let parts: std::vec::Vec<&str> = inner.split(',').collect();
         assert_eq!(parts.len(), 1, "start_id=1 should return only one entry");
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty range with records outside it
+    // -----------------------------------------------------------------------
+
+    /// Collect an export batch into a UTF-8 string.
+    fn export_json(client: &AnchorKitContractClient<'_>, start_id: u64, limit: u32) -> std::string::String {
+        let batch = client.export_audit_log_batch(&start_id, &limit);
+        let buf: std::vec::Vec<u8> = (0..batch.len()).map(|i| batch.get(i).unwrap()).collect();
+        std::string::String::from_utf8(buf).expect("export must be valid UTF-8")
+    }
+
+    /// A range that contains no events — while the log holds records outside
+    /// it — exports a well-formed empty array with the same shape (a JSON
+    /// array of hex strings) as a non-empty export, and leaks no neighbouring
+    /// records.
+    #[test]
+    fn export_range_with_no_events_returns_empty_array() {
+        let env = make_env();
+        let (_, client) = setup(&env);
+        let (attestor, sk) = add_attestor(&env, &client);
+
+        // IDs 0 and 1 fall in the time range [2_000, 2_600); ID 2 is after it.
+        emit_one_entry(&env, &client, &attestor, &sk, 2_000);
+        emit_one_entry(&env, &client, &attestor, &sk, 2_500);
+        emit_one_entry(&env, &client, &attestor, &sk, 3_000);
+
+        // Prune that time range so IDs 0..2 no longer hold any events.
+        set_ledger(&env, 3_500);
+        assert_eq!(client.prune_audit_logs(&2_600u64), 2);
+
+        // Sequence range [0, 2) is now empty; the ID-2 record must not leak in.
+        let empty_json = export_json(&client, 0, 2);
+        assert_eq!(empty_json, "[]", "empty range must export []");
+
+        // A zero-width range starting on a live record is also empty.
+        assert_eq!(export_json(&client, 2, 0), "[]", "zero-limit range must export []");
+
+        // The remaining record is the only one exported over the full range.
+        let nonempty_json = export_json(&client, 0, 10);
+        let empty: std::vec::Vec<std::string::String> =
+            serde_json::from_str(&empty_json).expect("empty export must be valid JSON");
+        let nonempty: std::vec::Vec<std::string::String> =
+            serde_json::from_str(&nonempty_json).expect("non-empty export must be valid JSON");
+        assert!(empty.is_empty(), "empty range must contain zero events");
+        assert_eq!(nonempty.len(), 1, "only the unpruned record may be exported");
+        assert_eq!(nonempty_json, export_json(&client, 2, 1));
+        assert!(nonempty[0].chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // -----------------------------------------------------------------------

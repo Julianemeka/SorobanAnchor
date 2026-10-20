@@ -9,6 +9,8 @@
 //!   the same ordering regardless of input order.
 //! - Sorting an empty slice returns an empty result (no panic).
 //! - Sorting a single-element slice returns that element unchanged.
+//! - Routing between identical quotes picks the same, input-order-determined
+//!   winner on every run, and reports that winner's own routing reason (#1266).
 
 #![cfg(test)]
 
@@ -474,5 +476,100 @@ mod attestation_ordering_tests {
         let _sorted = sort_attestations(&input, AttestationSortOrder::IdAsc);
         assert_eq!(input[0].id, 30); // original order preserved
         assert_eq!(input[1].id, 10);
+    }
+}
+
+// ── Routing tie-break for identical quotes (#1266) ───────────────────────────
+
+#[cfg(not(feature = "wasm"))]
+mod routing_tie_break_tests {
+    use anchorkit::multi_asset_routing::{
+        route_multi_asset, AssetPairQuote, AssetPairRequest, CandidateQuote, ROUTING_STRATEGIES,
+    };
+
+    /// A candidate identical to every other except for its identifiers and
+    /// routing reason, so every strategy scores it equally.
+    fn make_candidate(quote_id: u64, anchor: &str) -> CandidateQuote {
+        CandidateQuote {
+            quote_id,
+            anchor: anchor.into(),
+            base_asset: "XLM".into(),
+            quote_asset: "USDC".into(),
+            rate: 1_000_000,
+            fee_percentage: 2,
+            minimum_amount: 1,
+            maximum_amount: 0,
+            valid_until: 10_000,
+            reputation_score: 80,
+            average_settlement_time: 300,
+            routing_reason: Some(anchor.into()),
+        }
+    }
+
+    fn route(candidates: &[CandidateQuote], strategy: &str) -> AssetPairQuote {
+        let request = AssetPairRequest {
+            base_asset: "XLM".into(),
+            quote_asset: "USDC".into(),
+            amount: 100,
+            strategy: strategy.into(),
+            min_reputation: 0,
+        };
+        let result = route_multi_asset(&[request], candidates, 1_000).expect("valid request");
+        assert!(result.unfilled.is_empty());
+        assert_eq!(result.filled.len(), 1);
+        result.filled[0].clone()
+    }
+
+    /// The existing tie-break is positional in the caller-supplied slice:
+    /// min-based strategies keep the first equal candidate, max-based
+    /// strategies keep the last.
+    fn expected_position(strategy: &str) -> usize {
+        match strategy {
+            "LowestFee" | "FastestSettlement" => 0,
+            "HighestReputation" | "WeightedScore" => 1,
+            other => panic!("unexpected strategy {other}"),
+        }
+    }
+
+    #[test]
+    fn identical_quotes_select_existing_winner_for_every_strategy() {
+        let candidates = [make_candidate(1, "anchor-a"), make_candidate(2, "anchor-b")];
+        for strategy in ROUTING_STRATEGIES {
+            let winner = &candidates[expected_position(strategy)];
+            let selected = route(&candidates, strategy);
+            assert_eq!(selected.quote_id, winner.quote_id, "winner for {strategy}");
+            assert_eq!(selected.anchor, winner.anchor, "anchor for {strategy}");
+            // The reported reason belongs to the selected quote, not its twin.
+            assert_eq!(selected.routing_reason, winner.routing_reason, "reason for {strategy}");
+            assert_eq!(selected.pair_key, "XLM/USDC");
+            assert_eq!(selected.strategy_applied, strategy);
+        }
+    }
+
+    #[test]
+    fn identical_quotes_tie_break_follows_input_order_only() {
+        let a = make_candidate(1, "anchor-a");
+        let b = make_candidate(2, "anchor-b");
+        for strategy in ROUTING_STRATEGIES {
+            // Reversing the input moves the winner with it: the tie is resolved
+            // by slice position, not by identifier or any hashed container.
+            let forward = route(&[a.clone(), b.clone()], strategy);
+            let reversed = route(&[b.clone(), a.clone()], strategy);
+            let pos = expected_position(strategy);
+            assert_eq!(forward.quote_id, [&a, &b][pos].quote_id, "{strategy} forward");
+            assert_eq!(reversed.quote_id, [&b, &a][pos].quote_id, "{strategy} reversed");
+        }
+    }
+
+    #[test]
+    fn identical_quotes_select_same_route_on_every_run() {
+        for strategy in ROUTING_STRATEGIES {
+            let first = route(&[make_candidate(1, "anchor-a"), make_candidate(2, "anchor-b")], strategy);
+            for _ in 0..20 {
+                // Freshly built inputs in the same order must give the same route.
+                let again = route(&[make_candidate(1, "anchor-a"), make_candidate(2, "anchor-b")], strategy);
+                assert_eq!(again, first, "{strategy} must be deterministic");
+            }
+        }
     }
 }
