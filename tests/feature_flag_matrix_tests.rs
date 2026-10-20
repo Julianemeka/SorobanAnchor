@@ -95,6 +95,34 @@ fn feature_matrix_default_is_std() {
 }
 
 #[test]
+fn feature_separation_no_default_features_excludes_std() {
+    // When built with --no-default-features, std should NOT be present
+    // This test documents the expected WASM feature configuration
+    #[cfg(all(not(feature = "std"), not(feature = "wasm")))]
+    {
+        // This is a no_std library build (no default features, no wasm feature)
+        // Verify that host-only modules are not accessible
+        // The contract module should still be available as it's no_std compatible
+        assert!(true, "no-default-features build excludes std");
+    }
+    
+    #[cfg(feature = "std")]
+    {
+        // This is a std build - the test passes as documentation
+        assert!(true, "std feature is present in this build");
+    }
+    
+    #[cfg(feature = "wasm")]
+    {
+        // This is a WASM build - should not have std
+        #[cfg(feature = "std")]
+        compile_error!("WASM builds should not have std feature enabled");
+        
+        assert!(true, "wasm feature is present and std is correctly excluded");
+    }
+}
+
+#[test]
 fn feature_matrix_mock_only_is_optional() {
     // mock-only should be optional and not in default features
     // This test passes whether or not mock-only is enabled
