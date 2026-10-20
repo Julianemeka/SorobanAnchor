@@ -86,6 +86,59 @@ client.migrate(&new_version);
 1 → 0 ✗ (cannot go to 0)
 ```
 
+## Upgrade Preflight (Read-Only Dry Run)
+
+There is no dedicated upgrade dry-run mode: `anchorkit deploy --dry-run` only
+skips a fresh deployment and has no upgrade or migrate path. The read-only
+preflight below uses the Stellar CLI (flags checked against `stellar` 26.0.0
+`--help`) to report the current and target versions without changing state.
+
+Always pass `--send=no`. With the default (`--send=default`), the CLI submits
+whenever simulation reports ledger writes, and `get_migration_count` /
+`get_migration_record` refresh their storage TTL, which counts as a write.
+Use the admin's **public key** as the source so nothing can be signed.
+
+```bash
+NET="--rpc-url $RPC_URL --network-passphrase $PASSPHRASE"
+READ="--id $CONTRACT_ID --source-account $ADMIN_PUBLIC_KEY --send=no $NET"
+WASM_FILE="target/wasm32-unknown-unknown/release/anchorkit.wasm"
+
+# ── Read-only: current state ──────────────────────────────────────────────
+stellar contract invoke $READ -- get_version          # {major, minor, patch, upgraded_at}
+stellar contract invoke $READ -- get_schema_version   # stored schema version
+stellar contract invoke $READ -- get_migration_count  # history length (N)
+stellar contract invoke $READ -- get_migration_record --idx 0   # 0..N-1; errors if N == 0
+
+# ── Read-only: installed vs. target code ──────────────────────────────────
+stellar contract fetch --id "$CONTRACT_ID" $NET --out-file current.wasm
+sha256sum current.wasm "$WASM_FILE"                    # identical hash → nothing to upgrade
+stellar contract info interface --wasm "$WASM_FILE"    # target exports migrate / get_schema_version
+```
+
+Neither the contract nor the WASM exposes the target schema version. Take it
+from the release notes (`LATEST_SCHEMA_VERSION` in `src/migration.rs`). After
+a successful `upgrade`, `get_version` reports the current patch + 1.
+
+`migrate` can only be simulated against the code that is **currently
+installed**, so run this check after `upgrade` and before the real `migrate`
+call:
+
+```bash
+# ── Read-only: simulate migrate on the upgraded code ──────────────────────
+stellar contract invoke $READ -- migrate --new_schema_version 2 --batch_size 100
+```
+
+A simulation error shows the call would be rejected: `#24` (`IllegalTransition`)
+means the contract is already at or past that version, and `#27`
+(`UnsupportedCapabilityVersion`) means the target is newer than the code
+supports. A successful simulation covers only the first batch. It does not
+show whether further `migrate` calls will be needed.
+
+**State-changing steps.** These sign and submit transactions, and require
+`--source-account` to be the admin's secret key or identity:
+`stellar contract upload`, `-- upgrade`, and `-- migrate` without `--send=no`.
+See the [Upgrade Playbook](./upgrade-playbook.md) §5 for that procedure.
+
 ## Data Preservation
 
 ### Preserved Data Types

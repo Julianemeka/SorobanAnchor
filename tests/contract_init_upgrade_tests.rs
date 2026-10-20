@@ -7,6 +7,7 @@
 //! 4. Upgrade with an invalid (all-zero) WASM hash is rejected.
 //! 5. Migration with a non-advancing or zero version is rejected.
 //! 6. Uninitialized contract rejects upgrade and migrate calls.
+//! 7. Rerunning migration at the current schema version leaves state unchanged.
 
 #![cfg(test)]
 
@@ -290,6 +291,60 @@ mod contract_init_upgrade_tests {
         client.migrate(&5u32, &100u32);
         // Downgrade attempt must fail.
         client.migrate(&2u32, &100u32);
+    }
+
+    // -----------------------------------------------------------------------
+    // Migrate — rerun at the current schema version is a no-op
+    // -----------------------------------------------------------------------
+
+    /// Re-invoking `migrate` at the schema version already stored must not
+    /// rewrite state. The target is rejected as non-advancing
+    /// (`IllegalTransition`), the failed invocation is rolled back, and the
+    /// schema version, migration history and stored quotes are unchanged —
+    /// identically on every rerun.
+    #[test]
+    fn migrate_rerun_at_current_version_preserves_state() {
+        use anchorkit::contract::SCHEMA_V2;
+        use soroban_sdk::xdr::ToXdr;
+
+        let env = make_env();
+        set_ledger(&env, 1000);
+        let (client, admin) = deploy(&env);
+        client.initialize(&admin);
+
+        let anchor = Address::generate(&env);
+        let usd = soroban_sdk::String::from_str(&env, "USD");
+        let quote_id = client.submit_quote(
+            &anchor, &usd, &usd, &100u64, &5u32, &1000u64, &10000u64, &2000u64,
+        );
+
+        // Bring the contract to the target schema version.
+        client.migrate(&SCHEMA_V2, &100u32);
+        assert_eq!(client.get_schema_version(), SCHEMA_V2);
+
+        let history_len = client.get_migration_count();
+        let last_record = client.get_migration_record(&(history_len - 1));
+        let quote_before = client.get_quote(&anchor, &quote_id);
+        assert_eq!(quote_before.schema_version, SCHEMA_V2);
+        let quote_before_xdr = quote_before.to_xdr(&env);
+
+        let expected = Err(Ok(soroban_sdk::Error::from_contract_error(
+            ErrorCode::IllegalTransition as u32,
+        )));
+        for _ in 0..2 {
+            assert_eq!(client.try_migrate(&SCHEMA_V2, &100u32), expected);
+
+            assert_eq!(client.get_schema_version(), SCHEMA_V2);
+            assert_eq!(client.get_migration_count(), history_len);
+            let record = client.get_migration_record(&(history_len - 1));
+            assert_eq!(record.to_version, last_record.to_version);
+            assert_eq!(record.applied_at, last_record.applied_at);
+            assert_eq!(
+                client.get_quote(&anchor, &quote_id).to_xdr(&env),
+                quote_before_xdr,
+                "stored quote must be byte-for-byte unchanged"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
