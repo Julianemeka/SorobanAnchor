@@ -46,6 +46,22 @@ fn events_of(records: &[LogRecord]) -> Vec<&str> {
     records.iter().map(|r| r.event.as_str()).collect()
 }
 
+#[test]
+fn successful_event_omits_absent_error_context() {
+    let logger = StructuredLogger::new();
+    let result: Result<(), &str> =
+        log_attestor_registration(&logger, 3000, "GATTESTOR", "GISSUER", || Ok(()));
+    assert_eq!(result, Ok(()));
+    let records = logger.records();
+    let value: serde_json::Value = serde_json::from_str(&records[1].to_json_line()).unwrap();
+    assert_eq!(value["ts"], 3000);
+    assert_eq!(value["seq"], 1);
+    assert_eq!(value["level"], "info");
+    assert_eq!(value["event"], events::ATTESTOR_REGISTRATION_SUCCEEDED);
+    assert_eq!(value["fields"], serde_json::json!({"attestor": "GATTESTOR"}));
+    assert!(value["fields"].get("error").is_none());
+}
+
 fn str_field<'a>(record: &'a LogRecord, key: &str) -> &'a str {
     match record.field(key) {
         Some(FieldValue::Str(s)) => s.as_str(),

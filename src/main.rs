@@ -1560,6 +1560,33 @@ fn quote(from: &str, to: &str, amount: u64, contract_id: &str, network: &str, so
     }
 }
 
+fn status_http_failure(status: reqwest::StatusCode, request_id: Option<&str>) -> String {
+    let mut diagnostic = format!("error: anchor returned HTTP {status}");
+    if let Some(id) = request_id.filter(|id| !id.trim().is_empty()) {
+        // JSON quoting keeps an untrusted response header on one diagnostic line.
+        diagnostic.push_str(&format!(" [request_id={}]", serde_json::json!(id)));
+    }
+    diagnostic
+}
+
+#[cfg(test)]
+mod status_diagnostic_tests {
+    use super::status_http_failure;
+
+    #[test]
+    fn http_failure_includes_only_available_request_id() {
+        let status = reqwest::StatusCode::BAD_GATEWAY;
+        assert_eq!(status_http_failure(status, None), "error: anchor returned HTTP 502 Bad Gateway");
+        assert_eq!(status_http_failure(status, Some("")), status_http_failure(status, None));
+        assert_eq!(status_http_failure(status, Some("  ")), status_http_failure(status, None));
+        assert_eq!(
+            status_http_failure(status, Some("request-1302")),
+            "error: anchor returned HTTP 502 Bad Gateway [request_id=\"request-1302\"]"
+        );
+        assert!(!status_http_failure(status, Some("a\nb")).contains('\n'));
+    }
+}
+
 fn status(tx_id: &str, anchor_url: &str, proxy_url: Option<&str>, no_proxy: Option<&str>) {
     let url = format!(
         "{}/sep6/transaction?id={}",
@@ -1592,7 +1619,8 @@ fn status(tx_id: &str, anchor_url: &str, proxy_url: Option<&str>, no_proxy: Opti
     });
 
     if !resp.status().is_success() {
-        eprintln!("error: anchor returned HTTP {}", resp.status());
+        let request_id = resp.headers().get("X-Request-Id").and_then(|id| id.to_str().ok());
+        eprintln!("{}", status_http_failure(resp.status(), request_id));
         std::process::exit(1);
     }
 
