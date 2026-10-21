@@ -1052,6 +1052,11 @@ mod tests {
     #[test]
     fn test_at_limit_exact_last_allowed_then_rejected() {
         let env = Env::default();
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            sequence_number: 50,
+            timestamp: 1_000,
+            ..env.ledger().get()
+        });
         let attestor = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
         let config = RateLimitConfig { max_submissions: 3, window_length: 100 };
         let contract_address = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
@@ -1079,6 +1084,64 @@ mod tests {
         // State must be capped — no overflow past max.
         let state = env.as_contract(&contract_id, &|| RateLimiter::get_state(&env, &attestor));
         assert_eq!(state.submission_count, 3, "count must not exceed max_submissions");
+        assert_eq!(state.window_start_ledger, 50);
+
+        // The exact expiry ledger starts a fresh allowance.
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            sequence_number: 150,
+            timestamp: 1_500,
+            ..env.ledger().get()
+        });
+        assert!(env.as_contract(&contract_id, &|| {
+            RateLimiter::check_and_increment(&env, &attestor, &config)
+        }).is_ok());
+        let state = env.as_contract(&contract_id, &|| RateLimiter::get_state(&env, &attestor));
+        assert_eq!(state.submission_count, 1);
+        assert_eq!(state.window_start_ledger, 150);
+    }
+
+    #[test]
+    fn test_exhausted_attestor_does_not_consume_another_attestors_allowance() {
+        let env = Env::default();
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            sequence_number: 50,
+            timestamp: 1_000,
+            ..env.ledger().get()
+        });
+        let first = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
+        let second = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
+        assert_ne!(first, second);
+        let contract_address = <soroban_sdk::Address as soroban_sdk::testutils::Address>::generate(&env);
+        let contract_id = env.register_contract(&contract_address, crate::contract::AnchorKitContract);
+        let config = RateLimitConfig { max_submissions: 2, window_length: 100 };
+
+        for _ in 0..config.max_submissions {
+            env.as_contract(&contract_id, &|| {
+                RateLimiter::check_and_increment(&env, &first, &config)
+            }).unwrap();
+        }
+        let exhausted = env.as_contract(&contract_id, &|| RateLimiter::get_state(&env, &first));
+        assert_eq!(exhausted.submission_count, 2);
+
+        let err = env.as_contract(&contract_id, &|| {
+            RateLimiter::check_and_increment(&env, &first, &config)
+        }).unwrap_err();
+        assert_eq!(err.code, ErrorCode::RateLimitExceeded);
+
+        // Both identities submit at the same ledger and timestamp.
+        env.as_contract(&contract_id, &|| {
+            RateLimiter::check_and_increment(&env, &second, &config)
+        }).unwrap();
+        let second_state = env.as_contract(&contract_id, &|| RateLimiter::get_state(&env, &second));
+        assert_eq!(second_state.submission_count, 1);
+        assert_eq!(second_state.window_start_ledger, exhausted.window_start_ledger);
+
+        let err = env.as_contract(&contract_id, &|| {
+            RateLimiter::check_and_increment(&env, &first, &config)
+        }).unwrap_err();
+        assert_eq!(err.code, ErrorCode::RateLimitExceeded);
+        assert_eq!(env.as_contract(&contract_id, &|| RateLimiter::get_state(&env, &first)), exhausted);
+        assert_eq!(env.as_contract(&contract_id, &|| RateLimiter::get_state(&env, &second)), second_state);
     }
 
     /// Every call after the limit (count > max_submissions) must still return

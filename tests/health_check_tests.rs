@@ -478,6 +478,58 @@ mod probe_latency_classification_tests {
         SyntheticProbeRunner,
     };
 
+    #[test]
+    fn successful_probe_recovers_health_after_failure() {
+        use anchorkit::anchor_health::{
+            build_health_snapshot, detect_health_transition, HealthTransitionEvent, HealthTrend,
+        };
+
+        let config = ProbeConfig::new(1, ProbeKind::Ping, "https://anchor.example.com")
+            .unwrap();
+        let runner = SyntheticProbeRunner::new(vec![config]);
+        let failed_reports = runner.run_all(
+            |config| Ok(ProbeResult::failure(config.id, 100, "HTTP 503")),
+            || 1_000,
+        );
+        assert_eq!(failed_reports[0].result.outcome, ProbeOutcome::Failure("HTTP 503".into()));
+        let failed_window = probe_results_to_health_window(&failed_reports);
+        assert_eq!(failed_window.success_count, 0);
+        assert_eq!(failed_window.failure_count, 1);
+        let failed = build_health_snapshot(&[failed_window.clone()]);
+        assert!(!failed.is_healthy());
+
+        // The current observation window determines health; historical
+        // failures must not keep a recovered anchor unavailable.
+        let successful_reports = runner.run_all(
+            |config| Ok(ProbeResult::success(config.id, 100)),
+            || 1_060,
+        );
+        assert_eq!(successful_reports[0].result.outcome, ProbeOutcome::Success);
+        let successful_window = probe_results_to_health_window(&successful_reports);
+        assert_eq!(successful_window.success_count, 1);
+        assert_eq!(successful_window.failure_count, 0);
+        let recovered = build_health_snapshot(&[failed_window, successful_window]);
+        assert!(recovered.is_healthy());
+        assert!(!recovered.is_degraded());
+        assert!(!recovered.is_critical());
+        assert_eq!(recovered.current_score.label(), "healthy");
+        assert_eq!(recovered.previous_score, Some(failed.current_score.composite));
+        assert_eq!(recovered.window_count, 2);
+        assert_eq!(recovered.trend, HealthTrend::Improving);
+        assert_eq!(
+            detect_health_transition(failed.current_score.composite, recovered.current_score.composite),
+            HealthTransitionEvent::Recovery {
+                previous_composite: failed.current_score.composite,
+                current_composite: recovered.current_score.composite,
+            },
+        );
+        assert_eq!(
+            detect_health_transition(recovered.current_score.composite, recovered.current_score.composite),
+            HealthTransitionEvent::NoChange,
+            "a repeated healthy observation must not emit another recovery",
+        );
+    }
+
     fn run_one(result: ProbeResult) -> ProbeOutcome {
         let probe = ProbeConfig::new(1, ProbeKind::Ping, "https://anchor.example.com")
             .unwrap()
