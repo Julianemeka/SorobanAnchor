@@ -98,6 +98,28 @@ fn build_report_empty_windows_does_not_panic() {
 }
 
 #[test]
+fn empty_health_report_exports_valid_json_without_observations() {
+    // No probes have supplied observation windows.
+    let windows: Vec<HealthWindow> = Vec::new();
+    let report = build_health_report("unprobed.example.com", &windows);
+    let json = export_health_report(&report, HealthReportFormat::Json);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(value["anchor_id"], "unprobed.example.com");
+    assert_eq!(value["window_count"], 0);
+    assert_eq!(value["previous_composite"], serde_json::Value::Null);
+    assert_eq!(value["trend"], "stable");
+    assert_eq!(value["label"], report.label.as_str());
+    for key in ["composite_score", "success_rate_score", "latency_score",
+                "routing_score", "recovery_score"] {
+        assert!(value[key].as_f64().unwrap().is_finite(), "invalid score: {key}");
+    }
+    assert_eq!(report.window_count, 0);
+    assert!(windows.is_empty());
+    assert_eq!(json, export_health_report(&build_health_report("unprobed.example.com", &[]), HealthReportFormat::Json));
+}
+
+#[test]
 fn build_report_degrading_trend_label() {
     // First window healthy, second critical → trend should be "degrading"
     let windows = vec![healthy_window(0), critical_window(300)];

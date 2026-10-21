@@ -192,6 +192,33 @@ fn identical_fingerprints_produce_no_drift() {
 }
 
 #[test]
+fn reordered_config_entries_produce_identical_fingerprints() {
+    let baseline = with_config(
+        make_fp("rustc 1.78.0", "cargo 1.78.0", None, "0.1.0", true),
+        &[("configs/a.json", "hash-a"), ("configs/b.toml", "hash-b"),
+          ("configs/c.json", "hash-c")],
+    );
+    let mut reordered = with_config(
+        make_fp("rustc 1.78.0", "cargo 1.78.0", None, "0.1.0", true),
+        &[("configs/c.json", "hash-c"), ("configs/b.toml", "hash-b"),
+          ("configs/a.json", "hash-a")],
+    );
+
+    assert_eq!(baseline.to_json().unwrap(), reordered.to_json().unwrap());
+    assert!(reordered.diff(&baseline).is_empty());
+    assert!(reordered.is_consistent_with(&baseline));
+
+    reordered.config.file_hashes.insert("configs/b.toml".into(), "changed-hash".into());
+    assert_ne!(baseline.to_json().unwrap(), reordered.to_json().unwrap());
+    let drift = reordered.diff(&baseline);
+    assert_eq!(drift.len(), 1);
+    assert_eq!(drift[0].field, "config.configs/b.toml");
+    assert_eq!(drift[0].baseline, "hash-b");
+    assert_eq!(drift[0].current, "changed-hash");
+    assert!(!reordered.is_consistent_with(&baseline));
+}
+
+#[test]
 fn rustc_version_change_reported() {
     let current  = make_fp("rustc 1.79.0", "cargo 1.78.0", None, "0.1.0", true);
     let baseline = make_fp("rustc 1.78.0", "cargo 1.78.0", None, "0.1.0", true);

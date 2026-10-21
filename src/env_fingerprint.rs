@@ -68,9 +68,19 @@ impl ToolVersions {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ConfigMetadata {
     /// Map of relative file path → lowercase hex SHA-256 digest.
+    #[serde(serialize_with = "serialize_file_hashes")]
     pub file_hashes: HashMap<String, String>,
     /// Number of config files found.
     pub file_count: usize,
+}
+
+// Sort map keys at the serialization boundary, including direct serde callers.
+fn serialize_file_hashes<S>(hashes: &HashMap<String, String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let ordered: std::collections::BTreeMap<_, _> = hashes.iter().collect();
+    ordered.serialize(serializer)
 }
 
 impl ConfigMetadata {
