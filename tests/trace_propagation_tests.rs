@@ -161,6 +161,50 @@ mod trace_propagation_tests {
     // 2. Retries specifically
     // -----------------------------------------------------------------------
 
+    /// A transient failure followed by success retains the inbound correlation ID.
+    #[test]
+    fn trace_survives_one_retry_before_success() {
+        let request = TraceContext::parse_traceparent(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        )
+        .expect("valid inbound context");
+        let observed: RefCell<Vec<Observed>> = RefCell::new(Vec::new());
+        let config = RetryConfig::new(2, 0, 1, 1).expect("valid retry config");
+        let mut jitter = MockJitterSource::new(vec![0]);
+
+        let result = retry_with_backoff_traced(
+            &config,
+            &request,
+            |attempt, trace| {
+                observed.borrow_mut().push(Observed {
+                    stage: "anchor",
+                    trace_id: trace.trace_id().into(),
+                    span_id: trace.span_id().into(),
+                });
+                if attempt == 0 {
+                    Err("transient failure")
+                } else {
+                    Ok("completed")
+                }
+            },
+            |_| true,
+            |_| {},
+            &mut jitter,
+        );
+
+        assert_eq!(result, Ok("completed"));
+        let observed = observed.into_inner();
+        assert_eq!(observed.len(), 2, "first attempt and one retry must run");
+        for (attempt, record) in observed.iter().enumerate() {
+            assert_eq!(record.trace_id, request.trace_id());
+            assert_eq!(
+                record.span_id,
+                request.child_for_attempt(attempt as u32).span_id()
+            );
+        }
+        assert_ne!(observed[0].span_id, observed[1].span_id);
+    }
+
     /// Trace context survives a retry sequence that exhausts every attempt.
     #[test]
     fn trace_survives_exhausted_retries() {

@@ -104,12 +104,23 @@ mod replay_metrics_tests {
         let hash = payload(&env, 0xAA);
         let sig = sign_payload(&env, &sk, &hash);
 
+        // Each test owns a fresh Env and contract, so no global metric state leaks in.
+        let before = client.get_replay_metrics();
+        assert_eq!(before.accepted_events, 0);
+        assert_eq!(before.total_replay_attempts, 0);
+        assert_eq!(before.unique_replayed_ids, 0);
+        assert_eq!(before.skipped_events, 0);
+        assert_eq!(client.get_replay_count_for_id(&hash), 0);
+
         // First submission — should succeed and bump accepted.
         client.submit_attestation(&issuer, &subject, &1_000_001u64, &hash, &sig);
 
         let mid = client.get_replay_metrics();
         assert_eq!(mid.accepted_events, 1);
         assert_eq!(mid.total_replay_attempts, 0);
+        assert_eq!(mid.unique_replayed_ids, 0);
+        assert_eq!(mid.skipped_events, 0);
+        assert_eq!(client.get_replay_count_for_id(&hash), 0);
 
         // Second submission with same hash — should be rejected as a replay.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -123,6 +134,14 @@ mod replay_metrics_tests {
         // replay counter must have incremented.
         assert_eq!(after.total_replay_attempts, 1);
         assert_eq!(after.unique_replayed_ids, 1);
+        assert_eq!(after.total_replay_attempts - mid.total_replay_attempts, 1);
+        assert_eq!(after.skipped_events, 0);
+        assert_eq!(client.get_replay_count_for_id(&hash), 1);
+
+        // Observing metrics must not count the rejection again.
+        let reread = client.get_replay_metrics();
+        assert_eq!(reread.total_replay_attempts, after.total_replay_attempts);
+        assert_eq!(reread.accepted_events, after.accepted_events);
     }
 
     // -----------------------------------------------------------------------
