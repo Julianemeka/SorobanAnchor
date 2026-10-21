@@ -472,6 +472,34 @@ soroban contract invoke --id <contract-id> --network $SOROBAN_NETWORK \
 
 ## Troubleshooting Common Issues
 
+### Retries and rate-limit capacity
+
+`retry_with_backoff` (and its traced variant) invokes the operation once per
+attempt; it does not reserve capacity once for the logical request. When that
+operation calls a rate-limited contract entry point, each attempt re-enters its
+rate-limit checks. In `submit_attestation`, authentication, signature, timestamp,
+and replay checks precede `enforce_rate_limit` / `check_and_increment`. Each
+admitted call increments capacity separately; early rejection does not, and a
+failed transaction rolls back its increment. A retry of an already committed
+attestation is rejected by the replay guard before reaching the limiter.
+
+Budget for attempt volume when configuring concurrency and `max_attempts`:
+three attempts can produce three outbound requests even for one logical request.
+Use `execute_with_budget` with a shared per-request `RetryBudget` to cap total
+attempts, including the initial attempt, across operations. The backoff helpers
+do not consult this budget automatically; callers must wire it into their
+execution path. The default `is_retryable` excludes `RateLimitExceeded`, so avoid
+an unconditional retry predicate that retries before the rate window resets.
+
+See [the retry loop](../src/retry.rs),
+[the contract call path](../src/contract.rs),
+`test_at_limit_exact_last_allowed_then_rejected` in the
+[limiter tests](../src/rate_limiter.rs), and
+`execute_with_budget_stops_on_exhaustion` in the
+[budget tests](../src/retry_budget.rs). These tests establish limiter accounting
+and budget exhaustion separately.
+
+
 ### Understanding Readiness vs Liveness
 
 AnchorKit health monitoring distinguishes between two concepts that serve different operational purposes:

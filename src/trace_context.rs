@@ -645,6 +645,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_traceparent_rejects_malformed_ids() {
+        // Correct characters but one character short; correct length but non-hex.
+        for trace in ["4bf92f3577b34da6a3ce929d0e0e473", "4bf92f3577b34da6a3ce929d0e0e473g"] {
+            let header = alloc::format!("00-{trace}-{SPAN}-01");
+            assert_eq!(
+                TraceContext::parse_traceparent(&header),
+                Err(TraceError::InvalidTraceId),
+                "malformed trace ID: {trace}"
+            );
+        }
+        for span in ["00f067aa0ba902b", "00f067aa0ba902bg"] {
+            let header = alloc::format!("00-{TRACE}-{span}-01");
+            assert_eq!(
+                TraceContext::parse_traceparent(&header),
+                Err(TraceError::InvalidSpanId),
+                "malformed span ID: {span}"
+            );
+        }
+
+        let valid = alloc::format!("00-{TRACE}-{SPAN}-01");
+        let context = TraceContext::parse_traceparent(&valid).expect("valid IDs");
+        assert_eq!(context.to_traceparent(), valid);
+    }
+
+    #[test]
     fn header_pairs_carry_all_three_headers() {
         let ctx = TraceContext::new(TRACE, SPAN, None, true).unwrap();
         let headers = ctx.header_pairs();
